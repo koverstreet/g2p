@@ -35,10 +35,12 @@ pub use arch::Isa;
 use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
 
 /// Multiplying bytes by a coefficient `c` of some GF(2^8): its products with each nibble, which
-/// `pshufb` and `tbl` look bytes up in
+/// `pshufb` and `tbl` look bytes up in, and its 8x8 bit matrix, which GFNI multiplies by
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MulTable {
     nibbles: [[u8; 16]; 2],
+    /// Byte `7 - i` is the row of a product's bit `i`
+    affine: u64,
 }
 
 impl MulTable {
@@ -47,7 +49,7 @@ impl MulTable {
     /// From `c`'s products with the powers of 2, `c * 2^j` for `j` in `0..8`: multiplying by `c`
     /// is linear, so they're all of it
     pub const fn from_powers(p: [u8; 8]) -> Self {
-        let mut nibbles = [[0; 16]; 2];
+        let (mut nibbles, mut affine) = ([[0; 16]; 2], 0);
         let mut j = 0;
         while j < 8 {
             // in every nibble with bit j % 4
@@ -58,9 +60,15 @@ impl MulTable {
                 }
                 n += 1;
             }
+            // bit i of c * 2^j is bit j of row i
+            let mut i = 0;
+            while i < 8 {
+                affine |= (p[j] as u64 >> i & 1) << (8 * (7 - i) + j);
+                i += 1;
+            }
             j += 1;
         }
-        MulTable { nibbles }
+        MulTable { nibbles, affine }
     }
 }
 

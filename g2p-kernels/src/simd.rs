@@ -5,9 +5,9 @@
 // except according to those terms.
 
 //! The kernel, once: over a register of bytes ([`Reg`]), multiplied by a coefficient
-//! ([`Multiply`]) by lookups in its nibble tables ([`Nibbles`] over a [`Shuffle`]). An arch says
-//! how its registers do those, a line an operation, and which ISAs it has; the scalar kernel is
-//! the same one, a byte at a time.
+//! ([`Multiply`]) by lookups in its nibble tables ([`Nibbles`] over a [`Shuffle`]) or by its 8x8
+//! bit matrix ([`Gfni`] over an [`Affine`]). An arch says how its registers do those, a line an
+//! operation, and which ISAs it has; the scalar kernel is the same one, a byte at a time.
 //!
 //! Everything here is `#[inline(always)]` into an ISA's `#[target_feature]` kernel - so it's
 //! compiled, intrinsics and all, with that ISA.
@@ -95,6 +95,14 @@ pub(crate) trait Shuffle: Reg {
     unsafe fn shuffle(t: Self, i: Self) -> Self;
 }
 
+/// Multiplying bytes by an 8x8 bit matrix: GFNI's `gf2p8affineqb`
+#[cfg(target_arch = "x86_64")]
+pub(crate) trait Affine: Reg {
+    /// The matrix in each 8 bytes
+    unsafe fn matrix(m: u64) -> Self;
+    unsafe fn affine(self, m: Self) -> Self;
+}
+
 /// Multiplying a register of bytes by a coefficient
 pub(crate) trait Multiply {
     type R: Reg;
@@ -118,6 +126,21 @@ impl<R: Shuffle> Multiply for Nibbles<R> {
     #[inline(always)] unsafe fn coeff(t: &MulTable) -> (R, R) { (R::table(&t.nibbles[0]), R::table(&t.nibbles[1])) }
     #[inline(always)] unsafe fn operand(r: R) -> (R, R) { (r.lo_nibbles(), r.hi_nibbles()) }
     #[inline(always)] unsafe fn mul((lo, hi): (R, R), (x_lo, x_hi): (R, R)) -> R { R::shuffle(lo, x_lo).xor(R::shuffle(hi, x_hi)) }
+}
+
+/// By the coefficient's 8x8 bit matrix: one instruction
+#[cfg(target_arch = "x86_64")]
+pub(crate) struct Gfni<R>(PhantomData<R>);
+
+#[cfg(target_arch = "x86_64")]
+#[rustfmt::skip]
+impl<R: Affine> Multiply for Gfni<R> {
+    type R = R;
+    type Coeff = R;
+    type Operand = R;
+    #[inline(always)] unsafe fn coeff(t: &MulTable) -> R { R::matrix(t.affine) }
+    #[inline(always)] unsafe fn operand(r: R) -> R { r }
+    #[inline(always)] unsafe fn mul(c: R, x: R) -> R { x.affine(c) }
 }
 
 /// A byte at a time, by its nibbles: the reference, and every ISA's tails
