@@ -148,14 +148,11 @@ pub trait GaloisField:
     /// ```
     fn pow(self, p: usize) -> Self {
         let mut val = Self::ONE;
-        let mut pow_pos = 1 << (usize::BITS - 1);
-        assert_eq!(pow_pos << 1, 0);
-        while pow_pos > 0 {
+        for i in (0..usize::BITS - p.leading_zeros()).rev() {
             val *= val;
-            if (pow_pos & p) > 0 {
+            if p >> i & 1 != 0 {
                 val *= self;
             }
-            pow_pos >>= 1;
         }
         val
     }
