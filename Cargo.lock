@@ -64,6 +64,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
+name = "cc"
+version = "1.0.94"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17f6e324229dc011159fcc089755d1e2e216a90d43a7dea6853ca740b84f35e7"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -215,12 +221,17 @@ version = "1.2.2"
 dependencies = [
  "criterion",
  "g2gen",
+ "g2p-kernels",
  "g2poly",
  "galois_2p8",
  "rand",
  "reed-solomon-erasure",
  "static_assertions",
 ]
+
+[[package]]
+name = "g2p-kernels"
+version = "0.1.0"
 
 [[package]]
 name = "g2poly"
@@ -553,6 +564,8 @@ version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7263373d500d4d4f505d43a2a662d475a894aa94503a1ee28e9188b5f3960d4f"
 dependencies = [
+ "cc",
+ "libc",
  "libm",
  "lru",
  "parking_lot",
