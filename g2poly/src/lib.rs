@@ -31,6 +31,8 @@
 //! assert_eq!(s, g2poly::G2Poly(0b101));
 //! ```
 
+#![cfg_attr(not(test), no_std)]
+
 use core::{cmp, fmt, ops};
 
 /// Main type exported by this library

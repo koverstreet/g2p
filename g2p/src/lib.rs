@@ -68,6 +68,8 @@
 //! have to be added together using the normal finite field addition. For our GF65536 example this
 //! means the multiplication tables use 4 * 256 * 256 entries á 2 byte which is ~0.5MB
 
+#![cfg_attr(not(test), no_std)]
+
 use core::{
     iter::{Product, Sum},
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign},
@@ -149,7 +151,7 @@ pub trait GaloisField:
     /// ```
     fn pow(self, p: usize) -> Self {
         let mut val = Self::ONE;
-        let mut pow_pos = 1 << (::std::mem::size_of::<usize>() * 8 - 1);
+        let mut pow_pos = 1 << (usize::BITS - 1);
         assert_eq!(pow_pos << 1, 0);
         while pow_pos > 0 {
             val *= val;
