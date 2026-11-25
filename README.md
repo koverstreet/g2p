@@ -18,9 +18,9 @@ multiplication is not guaranteed to be constant time.
 
 ## Note
 The implementation was tested for finite fields up to 2^17 in size, which compiles reasonably
-fast. The space requirements are linear to the field size for the inversion table and log^2(N)
-for the multiplication table. This means it is not feasible to use this to generate fields of
-size 2^32, which would 4*4GB memory.
+fast. Past 2^8 elements the space requirements are linear in the field size: three entries per
+element, ~384KB for GF(2^16). This means it is not feasible to use this to generate fields of
+size 2^32, which would need 48GB.
 
 ## Examples
 ```ignore
@@ -53,25 +53,18 @@ is fixed. Here are the results:
 `g2p` generates a new type that implements all the common arithmetic operations. The
 calculations are performed on either u8, u16 or u32, depending on the field size.
 
-Addition and subtraction are implemented using regular `Xor`. For division, the divisor inverted
-using a precomputed inversion table, which is then multiplied using the multiplication outlined
-below
+Addition and subtraction are implemented using regular `Xor`.
 
-### Multiplication
-Multiplication uses a number of precomputed tables to determine the result. Because a full table
-would grow with the square of the field size, this approach was not deemed feasible. For
-example, using a full table for GF65536 = GF(2^16), one would need 2^32 entries, which would
-mean the program reserves 2*4GB just for these tables alone.
+### Multiplication and division
+Every element but zero is a power of the field's generator `g`, so a product's exponent is the
+sum of its factors': `a * b = g^(log a + log b)`, and a quotient's the difference. Two
+precomputed tables give it - `log`, and `exp`, the powers of `g` twice over, so a sum of two
+logs needs no reduction - three entries per element: 766 bytes for GF(2^8), ~384KB for
+GF(2^16).
 
-Instead a number `n` is split into 8bit components `n = a + 256 * b + 65536 * c ...`. Using this
-representation we can multiply two numbers by cross-multiplying all the components
-and then adding them up again. So assuming 16bit numbers `n = n0 + 256 * n1` and
-`m = m0 + 256 * m1` we get `n*m = n0*m0 + 256*n0*m1 + 256*n1*m0 + 65536*n1*m1`.
-
-We can now create precomputed tables for multiplying the different components together. There is
-a table for first component times first component, first times second etc. The results then just
-have to be added together using the normal finite field addition. For our GF65536 example this
-means the multiplication tables use 4 * 256 * 256 entries á 2 byte which is ~0.5MB
+A field of up to 2^8 elements also has a table of every product, at most 64KB, so that a product
+is one lookup. The `small-tables` feature leaves it out, and multiplies by `log` and `exp`
+instead.
 
 ## License
 Licensed under the Apache License, Version 2.0 [LICENSE-APACHE](LICENSE-APACHE)

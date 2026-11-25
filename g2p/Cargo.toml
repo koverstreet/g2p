@@ -21,6 +21,11 @@ reed-solomon-erasure = "6.0"
 criterion = "0.4"
 rand = "0.8"
 
+[features]
+# Fields of up to 2^8 elements without a table of every product - up to 64KB - multiplying by
+# their log and exp tables instead
+small-tables = ["g2gen/small-tables"]
+
 [dependencies]
 g2gen = { path = "../g2gen", version = "1.2" }
 g2poly = { path = "../g2poly", version = "1.2" }

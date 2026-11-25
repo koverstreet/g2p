@@ -14,7 +14,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream as P1TokenStream;
 use proc_macro2::{Ident, Span, TokenStream as P2TokenStream};
 
-use g2poly::{extended_gcd, G2Poly};
+use g2poly::G2Poly;
 use quote::quote;
 use syn::{
     parse::{Parse, ParseStream},
@@ -168,7 +168,7 @@ pub fn g2p(input: P1TokenStream) -> P1TokenStream {
     ];
 
     let (tables, mul, div) =
-        generate_mul_impl(ident.clone(), &ident_name, modulus, ty, field_size, mask);
+        generate_mul_impl(ident.clone(), &ident_name, modulus, generator, ty, field_size);
     let product = quote![
         impl ::core::iter::Product for #ident {
             fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
@@ -277,147 +277,106 @@ fn find_generator(m: G2Poly) -> G2Poly {
     unreachable!("There must be a generator element")
 }
 
-/// Calculate the log base 256, rounded up
+/// Generate the log and exp tables
 ///
-/// Given a number n, calculate the log base 256, rounded up. This can be though of as the number
-/// of bytes needed to represent this number.
-fn ceil_log256(mut n: usize) -> usize {
-    if n == 0 {
-        return 0;
-    }
-
-    let mut c = 1;
-    while n > 256 {
-        c += 1;
-        // NB: This is the rounding up part. If n is a proper power of 256, adding 255 will not
-        // change the result. In the other cases, this ensures that we round up in the division.
-        n = (n + 255) >> 8;
-    }
-    c
-}
-
-/// Generate multiplication array
-///
-/// Generate a string representing a 5d multiplication array. This array uses the associativity
-/// of multiplication `(a + b) * (c + d) == a*c + a*d + b*c + b*d` to reduce table size.
-///
-/// The input is split into bit chunks e.g. for a GF_1024 number we take the lower 8 bit and the
-/// remaining 2 and calculate the multiplications for each separately. Then we can cheaply add them
-/// together to get the the result with requiring a full 1024 * 1024 input.
-fn generate_mul_table_string(modulus: G2Poly) -> String {
-    assert!(modulus.is_irreducible());
-
-    let field_size = 1
+/// Every element but zero is a power of the generator: `exp[i]` is `generator^i`, and `log[x]` the
+/// `i` with `generator^i == x`. A product's log is the sum of its factors' logs, so exp has the
+/// powers twice over and `exp[log[a] + log[b]]` needs no reduction - three tables' worth of
+/// entries for a field, where a full multiplication table would have the field size squared.
+fn generate_log_exp_tables(modulus: G2Poly, generator: G2Poly) -> (Vec<u64>, Vec<u64>) {
+    let field_size = 1_usize
         << modulus
             .degree()
             .expect("Irreducible polynomial has positive degree");
-    let nparts = ceil_log256(field_size as usize);
+    let order = field_size - 1;
 
-    let mut mul_table = Vec::with_capacity(nparts);
-    for left in 0..nparts {
-        let mut left_parts = Vec::with_capacity(nparts);
-        for right in 0..nparts {
-            let mut right_parts = Vec::with_capacity(256);
-            for i in 0..256 {
-                let i = i << (8 * left);
-                let mut row = Vec::with_capacity(256);
-                for j in 0..256 {
-                    let j = j << (8 * right);
-                    let v = if i < field_size && j < field_size {
-                        G2Poly(i as u64) * G2Poly(j as u64) % modulus
-                    } else {
-                        G2Poly(0)
-                    };
-
-                    row.push(format!("{}", v.0));
-                }
-                right_parts.push(format!("[{}]", row.join(",")));
-            }
-            left_parts.push(format!("[{}]", right_parts.join(",")));
-        }
-        mul_table.push(format!("[{}]", left_parts.join(",")));
+    let mut log = vec![0; field_size];
+    let mut exp = Vec::with_capacity(2 * order);
+    let mut x = G2Poly(1);
+    for i in 0..order {
+        exp.push(x.0);
+        log[x.0 as usize] = i as u64;
+        x = x * generator % modulus;
     }
-
-    format!("[{}]", mul_table.join(","))
+    exp.extend_from_within(..order);
+    (log, exp)
 }
 
-fn generate_inv_table_string(modulus: G2Poly) -> String {
-    assert!(modulus.is_irreducible());
-
-    let field_size = 1
-        << modulus
-            .degree()
-            .expect("Irreducible polynomial has positive degree");
-    let mut inv_table = vec![0; field_size as usize];
-    // Inverse table is small enough to compute directly
-    for i in 1..field_size {
-        if inv_table[i as usize] != 0 {
-            // Already computed inverse
-            continue;
-        }
-
-        let a = G2Poly(i);
-
-        // Returns (gcd, x, y) such that gcd(a, m) == a * x + y * m
-        // Since we know that gcd(a, m) == 1 and that we operate modulo m, y * m === 0 mod m
-        // So we have 1 === a * x mod m
-
-        let (_gcd, x, _y) = extended_gcd(a, modulus);
-        inv_table[i as usize] = x.0;
-        inv_table[x.0 as usize] = i;
-    }
-
+/// A table, as a token stream: faster to generate than with quote
+fn table_tokens(table: &[u64]) -> P2TokenStream {
     use std::fmt::Write;
-    let mut res = String::with_capacity(3 * field_size as usize);
-    write!(&mut res, "[").unwrap();
-    for v in inv_table {
+    let mut res = String::with_capacity(8 * table.len());
+    res.push('[');
+    for v in table {
         write!(&mut res, "{},", v).unwrap();
     }
-    write!(&mut res, "]").unwrap();
-    res
+    res.push(']');
+    res.parse().unwrap()
 }
 
 fn generate_mul_impl(
     ident: syn::Ident,
     ident_name: &str,
     modulus: G2Poly,
+    generator: G2Poly,
     ty: P2TokenStream,
     field_size: usize,
-    mask: u64,
 ) -> (P2TokenStream, P2TokenStream, P2TokenStream) {
-    let mul_table = generate_mul_table_string(modulus);
-    let inv_table = generate_inv_table_string(modulus);
+    let (log, exp) = generate_log_exp_tables(modulus, generator);
+    let order = field_size - 1;
+    let exp_len = exp.len();
 
-    // Faster generation than using quote
-    let mul_table_string: proc_macro2::TokenStream = mul_table.parse().unwrap();
-    let inv_table_string: proc_macro2::TokenStream = inv_table.parse().unwrap();
+    // A field of up to 2^8 elements gets a table of every product too, at most 64KB, so a product
+    // is one lookup - unless the small-tables feature says log and exp will do.
+    let mul = if field_size <= 256 && !cfg!(feature = "small-tables") {
+        let product = |a: usize, b: usize| match (a, b) {
+            (0, _) | (_, 0) => 0,
+            _ => exp[(log[a] + log[b]) as usize],
+        };
+        let rows: Vec<String> = (0..field_size)
+            .map(|a| {
+                let row: Vec<String> = (0..field_size).map(|b| product(a, b).to_string()).collect();
+                format!("[{}]", row.join(","))
+            })
+            .collect();
+        let products: P2TokenStream = format!("[{}]", rows.join(",")).parse().unwrap();
+        quote![
+            pub static MUL: [[#ty; #field_size]; #field_size] = #products;
 
-    let nparts = ceil_log256(field_size);
+            impl ::core::ops::Mul for #ident {
+                type Output = Self;
+                fn mul(self, rhs: Self) -> Self {
+                    Self(MUL[(self.0 & Self::MASK) as usize][(rhs.0 & Self::MASK) as usize])
+                }
+            }
+        ]
+    } else {
+        quote![
+            impl ::core::ops::Mul for #ident {
+                type Output = Self;
+                fn mul(self, rhs: Self) -> Self {
+                    let (a, b) = ((self.0 & Self::MASK) as usize, (rhs.0 & Self::MASK) as usize);
+                    if a == 0 || b == 0 {
+                        return Self(0);
+                    }
+                    Self(EXP[LOG[a] as usize + LOG[b] as usize])
+                }
+            }
+        ]
+    };
+
+    let (log, exp) = (table_tokens(&log), table_tokens(&exp));
 
     // NB: We generate static arrays, as they are guaranteed to have a fixed location in memory.
     //     Using const would mean the compiler is free to create copies on the stack etc. Since
     //     The arrays are quite large, this could lead to stack overflows.
     let tables = quote! {
-        pub static MUL_TABLE: [[[[#ty; 256]; 256]; #nparts]; #nparts] = #mul_table_string;
-        pub static INV_TABLE: [#ty; #field_size] = #inv_table_string;
+        pub static LOG: [#ty; #field_size] = #log;
+        pub static EXP: [#ty; #exp_len] = #exp;
     };
 
-    let mut mul_ops = Vec::with_capacity(nparts * nparts);
-    for left in 0..nparts {
-        for right in 0..nparts {
-            mul_ops.push(quote![
-                #ident(MUL_TABLE[#left][#right][(((self.0 & #mask as #ty) >> (8*#left)) & 255) as usize][(((rhs.0 & #mask as #ty) >> (8*#right)) & 255) as usize])
-            ]);
-        }
-    }
-
     let mul = quote![
-        impl ::core::ops::Mul for #ident {
-            type Output = Self;
-            fn mul(self, rhs: Self) -> Self {
-                #(#mul_ops)+*
-            }
-        }
+        #mul
         impl ::core::ops::MulAssign for #ident {
             fn mul_assign(&mut self, rhs: Self) {
                 *self = *self * rhs;
@@ -432,10 +391,14 @@ fn generate_mul_impl(
             type Output = Self;
 
             fn div(self, rhs: Self) -> Self {
-                if (rhs.0 & #mask as #ty) == 0 {
+                let (a, b) = ((self.0 & Self::MASK) as usize, (rhs.0 & Self::MASK) as usize);
+                if b == 0 {
                     panic!(#err_msg);
                 }
-                self * Self(INV_TABLE[(rhs.0 & #mask as #ty) as usize])
+                if a == 0 {
+                    return Self(0);
+                }
+                Self(EXP[LOG[a] as usize + #order - LOG[b] as usize])
             }
         }
         impl ::core::ops::DivAssign for #ident {
@@ -513,35 +476,21 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_mul_table() {
-        let m = G2Poly(0b111);
-
-        assert_eq!(
-            include_str!("../tests/mul_table.txt").trim(),
-            generate_mul_table_string(m)
-        );
-    }
-
-    #[test]
-    fn test_generate_inv_table_string() {
+    fn test_generate_log_exp_tables() {
+        // Rijndael's field, whose generator isn't 2
         let m = G2Poly(0b1_0001_1011);
+        let g = find_generator(m);
+        assert_eq!(g, G2Poly(3));
+        let (log, exp) = generate_log_exp_tables(m, g);
 
-        assert_eq!(
-            include_str!("../tests/inv_table.txt").trim(),
-            generate_inv_table_string(m)
-        );
-    }
-
-    #[test]
-    fn test_ceil_log256() {
-        assert_eq!(0, ceil_log256(0));
-        assert_eq!(1, ceil_log256(1));
-        assert_eq!(1, ceil_log256(256));
-        assert_eq!(2, ceil_log256(257));
-        assert_eq!(2, ceil_log256(65536));
-        assert_eq!(3, ceil_log256(65537));
-        assert_eq!(3, ceil_log256(131072));
-        assert_eq!(3, ceil_log256(16777216));
-        assert_eq!(4, ceil_log256(16777217));
+        assert_eq!((log.len(), exp.len()), (256, 510));
+        assert_eq!(exp[..255], exp[255..]);
+        for a in 1..256_u64 {
+            assert_eq!(exp[log[a as usize] as usize], a);
+            for b in 1..256_u64 {
+                let p = exp[(log[a as usize] + log[b as usize]) as usize];
+                assert_eq!(G2Poly(p), G2Poly(a) * G2Poly(b) % m, "{} * {}", a, b);
+            }
+        }
     }
 }

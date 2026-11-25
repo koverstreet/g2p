@@ -17,6 +17,11 @@ rust-version = "1.61"
 [lib]
 proc-macro = true
 
+[features]
+# Fields of up to 2^8 elements without a table of every product - up to 64KB - multiplying by
+# their log and exp tables instead
+small-tables = []
+
 [dependencies]
 syn = { version = "2.0", features = ["parsing", "proc-macro"], default-features = false }
 quote = "1.0"
