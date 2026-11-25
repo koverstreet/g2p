@@ -167,8 +167,20 @@ pub fn g2p(input: P1TokenStream) -> P1TokenStream {
         }
     ];
 
-    let (tables, mul, div) =
-        generate_mul_impl(ident.clone(), &ident_name, modulus, generator, ty, field_size);
+    let field8 = if p == 8 {
+        quote![impl ::g2p::GaloisField8 for #ident {}]
+    } else {
+        quote![]
+    };
+
+    let (tables, mul, div) = generate_mul_impl(
+        ident.clone(),
+        &ident_name,
+        modulus,
+        generator,
+        ty,
+        field_size,
+    );
     let product = quote![
         impl ::core::iter::Product for #ident {
             fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
@@ -195,6 +207,7 @@ pub fn g2p(input: P1TokenStream) -> P1TokenStream {
             #product
             #div
             #galois_trait_impl
+            #field8
         }
     ])
 }

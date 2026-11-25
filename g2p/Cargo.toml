@@ -2,7 +2,7 @@
 name = "g2p"
 version = "1.2.2"
 authors = ["WanzenBug <moritz@wanzenbug.xyz>"]
-edition = "2018"
+edition = "2021"
 readme = "../README.md"
 license = "MIT/Apache-2.0"
 repository = "https://github.com/WanzenBug/g2p"
@@ -12,7 +12,7 @@ A crate to create types that implement fast finite field arithmetic.
 """
 categories = [ "no-std", "cryptography", "algorithms" ]
 keywords = [ "finite-field", "galois", "macro", "newtype"]
-rust-version = "1.61"
+rust-version = "1.63"
 
 [dev-dependencies]
 static_assertions = "1.1"
@@ -22,6 +22,9 @@ criterion = "0.4"
 rand = "0.8"
 
 [features]
+# Choosing SIMD kernels at runtime, for the CPU it runs on: without it, for the CPU compiled for
+default = ["std"]
+std = ["g2p-kernels/std"]
 # Fields of up to 2^8 elements without a table of every product - up to 64KB - multiplying by
 # their log and exp tables instead
 small-tables = ["g2gen/small-tables"]
@@ -29,6 +32,7 @@ small-tables = ["g2gen/small-tables"]
 [dependencies]
 g2gen = { path = "../g2gen", version = "1.2" }
 g2poly = { path = "../g2poly", version = "1.2" }
+g2p-kernels = { path = "../g2p-kernels", version = "0.1" }
 
 [[bench]]
 name = "g2_8_bench"

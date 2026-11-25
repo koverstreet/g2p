@@ -37,6 +37,25 @@ assert_eq!(a / c, one / b);
 assert_eq!(b / b, one);
 ```
 
+## Bulk operations and matrices
+For fields of 2^8 elements, `g2p::bulk` multiplies buffers of them - bytes - by constants, with the
+best SIMD the CPU has: SSSE3, AVX2, AVX-512 and GFNI on x86-64, NEON on aarch64. A matrix of
+constants times a vector of buffers is an erasure code's encoding and decoding, and `g2p::Matrix`
+is the matrices themselves: built, multiplied and inverted, and made into the tables `bulk` takes.
+
+```ignore
+use g2p::{bulk, g2p, GaloisField8, Matrix};
+g2p::g2p!(GF256, 8, modulus: 0b1_0001_1101);
+
+// RAID6's P and Q of three data blocks
+let m: Matrix<GF256, 2, 3> = Matrix::from_fn(2, 3, |r, c| GF256::from(1 << (r * c)));
+let tables: Vec<_> = m.mul_tables().collect();
+bulk::mul_matrix(&mut [&mut p[..], &mut q[..]], &[&d0[..], &d1[..], &d2[..]], &tables);
+```
+
+The kernels are their own crate, `g2p-kernels`, so they can be built on their own: for a target
+whose code can't otherwise use vector registers, such as a kernel's.
+
 ## Performance
 There is a benchmark suite comparing the result of this crate to [galois_2p8](https://crates.io/crates/galois_2p8)
 and [reed-solomon-erasure](https://crates.io/crates/reed-solomon-erasure) which both implement a finite field with 256
