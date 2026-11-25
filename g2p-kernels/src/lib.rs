@@ -58,26 +58,27 @@ impl MulTable {
     /// From `c`'s products with the powers of 2, `c * 2^j` for `j` in `0..8`: multiplying by `c`
     /// is linear, so they're all of it
     pub const fn from_powers(p: [u8; 8]) -> Self {
-        let (mut nibbles, mut affine) = ([[0; 16]; 2], 0);
-        let mut j = 0;
-        while j < 8 {
-            // in every nibble with bit j % 4
-            let mut n = 0;
-            while n < 16 {
-                if n >> (j % 4) & 1 != 0 {
-                    nibbles[j / 4][n] ^= p[j];
-                }
-                n += 1;
-            }
-            // bit i of c * 2^j is bit j of row i
-            let mut i = 0;
-            while i < 8 {
-                affine |= (p[j] as u64 >> i & 1) << (8 * (7 - i) + j);
-                i += 1;
-            }
-            j += 1;
+        // a nibble's product: its lowest bit's, and the rest's
+        let mut nibbles = [[0; 16]; 2];
+        let mut n: usize = 1;
+        while n < 16 {
+            let low = n.trailing_zeros() as usize;
+            nibbles[0][n] = nibbles[0][n & (n - 1)] ^ p[low];
+            nibbles[1][n] = nibbles[1][n & (n - 1)] ^ p[4 + low];
+            n += 1;
         }
-        MulTable { nibbles, affine }
+
+        // row i is bit i of each product: the products as rows of bits, transposed (Hacker's
+        // Delight's transpose8), the last row first
+        let mut x = u64::from_le_bytes(p);
+        let t = (x ^ (x >> 7)) & 0x00aa_00aa_00aa_00aa;
+        x ^= t ^ (t << 7);
+        let t = (x ^ (x >> 14)) & 0x0000_cccc_0000_cccc;
+        x ^= t ^ (t << 14);
+        let t = (x ^ (x >> 28)) & 0x0000_0000_f0f0_f0f0;
+        x ^= t ^ (t << 28);
+
+        MulTable { nibbles, affine: x.swap_bytes() }
     }
 }
 
