@@ -15,6 +15,7 @@ impl Reg for uint8x16_t {
     #[inline(always)] unsafe fn load(b: &[u8]) -> Self { vld1q_u8(b.as_ptr()) }
     #[inline(always)] unsafe fn store(self, b: &mut [u8]) { vst1q_u8(b.as_mut_ptr(), self) }
     #[inline(always)] unsafe fn xor(self, r: Self) -> Self { veorq_u8(self, r) }
+    #[inline(always)] unsafe fn zero() -> Self { vdupq_n_u8(0) }
 }
 
 #[rustfmt::skip]

@@ -54,6 +54,8 @@ pub struct MulTable {
 
 impl MulTable {
     const ZERO: MulTable = MulTable::from_powers([0; 8]);
+    /// In any field: `1 * 2^j` is `2^j`
+    const ONE: MulTable = MulTable::from_powers([1, 2, 4, 8, 16, 32, 64, 128]);
 
     /// From `c`'s products with the powers of 2, `c * 2^j` for `j` in `0..8`: multiplying by `c`
     /// is linear, so they're all of it
@@ -79,6 +81,11 @@ impl MulTable {
         x ^= t ^ (t << 28);
 
         MulTable { nibbles, affine: x.swap_bytes() }
+    }
+
+    /// `x`'s product
+    fn mul(&self, x: u8) -> u8 {
+        self.nibbles[0][usize::from(x & 15)] ^ self.nibbles[1][usize::from(x >> 4)]
     }
 }
 

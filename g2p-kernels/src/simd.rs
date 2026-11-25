@@ -10,7 +10,8 @@
 //! operation, and which ISAs it has; the scalar kernel is the same one, a byte at a time.
 //!
 //! Everything here is `#[inline(always)]` into an ISA's `#[target_feature]` kernel - so it's
-//! compiled, intrinsics and all, with that ISA.
+//! compiled, intrinsics and all, with that ISA - and no intrinsic is called in a closure, which
+//! isn't the kernel, and hasn't its target features.
 
 use crate::{matrix_len, MulTable};
 use core::marker::PhantomData;
@@ -105,6 +106,7 @@ pub(crate) trait Reg: Copy {
     /// Into `b`'s first `BYTES`: it has them
     unsafe fn store(self, b: &mut [u8]);
     unsafe fn xor(self, r: Self) -> Self;
+    unsafe fn zero() -> Self;
 }
 
 /// Looking bytes up in a table of 16, in each 16 bytes of a register: `pshufb`, `tbl`
@@ -174,6 +176,7 @@ impl Reg for u8 {
     #[inline(always)] unsafe fn load(b: &[u8]) -> u8 { b.first().copied().unwrap_or(0) }
     #[inline(always)] unsafe fn store(self, b: &mut [u8]) { b.iter_mut().take(1).for_each(|d| *d = self) }
     #[inline(always)] unsafe fn xor(self, r: u8) -> u8 { self ^ r }
+    #[inline(always)] unsafe fn zero() -> u8 { 0 }
 }
 
 #[rustfmt::skip]
@@ -183,44 +186,126 @@ impl Multiply for Scalar {
     type Operand = u8;
     #[inline(always)] unsafe fn coeff(t: &MulTable) -> MulTable { *t }
     #[inline(always)] unsafe fn operand(x: u8) -> u8 { x }
-    #[inline(always)] unsafe fn mul(c: MulTable, x: u8) -> u8 { c.nibbles[0][usize::from(x & 15)] ^ c.nibbles[1][usize::from(x >> 4)] }
+    #[inline(always)] unsafe fn mul(c: MulTable, x: u8) -> u8 { c.mul(x) }
 }
 
-/// The most outputs a pass takes: their coefficients are held in registers
+/// The most outputs a pass holds in registers
 const OUTS: usize = 6;
 
-/// The bytes of each buffer a pass does: an L1's worth, so the outputs stay there while each input
-/// is added in
-const TILE: usize = 2048;
+/// The most inputs a pass multiplies in: their coefficients are sorted out first
+const INS: usize = 8;
 
-/// `outs[o] (+)= c(o) * src`, over bytes `at..end`, a register at a time: each coefficient held in
-/// registers, each of `src`'s registers made an operand once for all the outputs
+/// A coefficient, sorted out: by most of an erasure code's - all of P's - nothing is multiplied
+#[derive(Clone, Copy)]
+enum Coeff<'a> {
+    Zero,
+    One,
+    Mul(&'a MulTable),
+}
+
+/// `outs (+)= m * ins` over bytes `from..to`, `INS` inputs at a time - with their coefficients sorted
+/// out first - and `U` registers at a time as far as that goes
 #[inline(always)]
-unsafe fn one_to_many<M: Multiply, const K: usize>(
+unsafe fn many_to_many<M: Multiply, const K: usize, const U: usize>(
     outs: &mut [&mut [u8]],
-    src: &[u8],
-    c: impl Fn(usize) -> MulTable,
+    ins: &[&[u8]],
+    m: &[MulTable],
     add: bool,
-    (at, end): (usize, usize),
+    (from, to): (usize, usize),
 ) {
-    let w = M::R::BYTES;
-    let c: [M::Coeff; K] = core::array::from_fn(|o| M::coeff(&c(o)));
+    let n = ins.len();
 
-    let mut x = at;
-    for s in src.get(at..end).unwrap_or(&[]).chunks_exact(w) {
-        let s = M::operand(M::R::load(s));
-        for (out, &c) in outs.iter_mut().zip(&c) {
-            if let Some(d) = out.get_mut(x..x + w) {
-                let p = M::mul(c, s);
-                (if add { M::R::load(d).xor(p) } else { p }).store(d);
+    // a pass with no inputs too, if there are none: it zeroes the outputs
+    for pass in 0..((n + INS - 1) / INS).max(1) {
+        let ins = ins.get(pass * INS..).unwrap_or(&[]);
+        let ins = ins.get(..INS).unwrap_or(ins);
+        let mut c = [[Coeff::Zero; K]; INS];
+        for (i, c) in c.iter_mut().enumerate() {
+            for (o, c) in c.iter_mut().enumerate() {
+                *c = match m.get(o * n + pass * INS + i) {
+                    Some(t) if t.affine == MulTable::ONE.affine => Coeff::One,
+                    Some(t) if t.affine != MulTable::ZERO.affine => Coeff::Mul(t),
+                    _ => Coeff::Zero,
+                };
             }
         }
-        x += w;
+        let add = add || pass > 0;
+
+        let at = held::<M, K, U>(outs, ins, &c, add, (from, to));
+        held::<M, K, 1>(outs, ins, &c, add, (at, to));
     }
 }
 
-/// `outs (+)= M * ins` from byte `from`, as far as whole registers go: `OUTS` outputs a pass, a
-/// `TILE` of them at a time, each input added in. The bytes it got to.
+/// `outs (+)= c * ins` over bytes `from..to`, as far as `U` registers at a time go: the outputs'
+/// held in registers while every input's is multiplied in, so each input is read once and each
+/// output written once - and an input with nothing to multiply by, all of P's, is only added. Every
+/// buffer is sliced by offset: a slice of `U` registers is known to have them, where an iterator a
+/// buffer would be kept on the stack. The bytes it got to.
+#[inline(always)]
+unsafe fn held<M: Multiply, const K: usize, const U: usize>(
+    outs: &mut [&mut [u8]],
+    ins: &[&[u8]],
+    c: &[[Coeff<'_>; K]; INS],
+    add: bool,
+    (from, to): (usize, usize),
+) -> usize {
+    let step = U * M::R::BYTES;
+    let to = from + (to - from) / step * step;
+
+    for x in (from..to).step_by(step) {
+        let mut acc = [[M::R::zero(); U]; K];
+        if add {
+            for (acc, out) in acc.iter_mut().zip(outs.iter()) {
+                if let Some(d) = out.get(x..x + step) {
+                    for (acc, d) in acc.iter_mut().zip(d.chunks_exact(M::R::BYTES)) {
+                        *acc = M::R::load(d);
+                    }
+                }
+            }
+        }
+        for (src, c) in ins.iter().zip(c) {
+            if let Some(s) = src.get(x..x + step) {
+                let mut r = [M::R::zero(); U];
+                for (r, s) in r.iter_mut().zip(s.chunks_exact(M::R::BYTES)) {
+                    *r = M::R::load(s);
+                }
+                let mut op = [M::operand(M::R::zero()); U];
+                if c.iter().any(|c| matches!(c, Coeff::Mul(_))) {
+                    for (op, r) in op.iter_mut().zip(&r) {
+                        *op = M::operand(*r);
+                    }
+                }
+                for (acc, c) in acc.iter_mut().zip(c) {
+                    match *c {
+                        Coeff::Zero => {}
+                        Coeff::One => {
+                            for (acc, r) in acc.iter_mut().zip(&r) {
+                                *acc = acc.xor(*r);
+                            }
+                        }
+                        Coeff::Mul(t) => {
+                            let t = M::coeff(t);
+                            for (acc, op) in acc.iter_mut().zip(&op) {
+                                *acc = acc.xor(M::mul(t, *op));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (acc, out) in acc.iter().zip(outs.iter_mut()) {
+            if let Some(d) = out.get_mut(x..x + step) {
+                for (acc, d) in acc.iter().zip(d.chunks_exact_mut(M::R::BYTES)) {
+                    acc.store(d);
+                }
+            }
+        }
+    }
+    to
+}
+
+/// `outs (+)= m * ins` from byte `from`, as far as whole registers go, `OUTS` outputs a pass. The
+/// bytes it got to.
 #[inline(always)]
 unsafe fn passes<M: Multiply>(
     outs: &mut [&mut [u8]],
@@ -234,26 +319,21 @@ unsafe fn passes<M: Multiply>(
 
     for (g, outs) in outs.chunks_mut(OUTS).enumerate() {
         let m = m.get(g * OUTS * n..).unwrap_or(&[]);
-        for at in (from..to).step_by(TILE) {
-            let tile = (at, to.min(at + TILE));
-            for (i, src) in ins.iter().enumerate() {
-                let c = |o: usize| m.get(o * n + i).copied().unwrap_or(MulTable::ZERO);
-                let add = add || i > 0;
-                match outs.len() {
-                    1 => one_to_many::<M, 1>(outs, src, c, add, tile),
-                    2 => one_to_many::<M, 2>(outs, src, c, add, tile),
-                    3 => one_to_many::<M, 3>(outs, src, c, add, tile),
-                    4 => one_to_many::<M, 4>(outs, src, c, add, tile),
-                    5 => one_to_many::<M, 5>(outs, src, c, add, tile),
-                    _ => one_to_many::<M, 6>(outs, src, c, add, tile),
-                }
-            }
+        // as many registers at a time as there's room to hold every output's
+        let range = (from, to);
+        match outs.len() {
+            1 => many_to_many::<M, 1, 4>(outs, ins, m, add, range),
+            2 => many_to_many::<M, 2, 4>(outs, ins, m, add, range),
+            3 => many_to_many::<M, 3, 2>(outs, ins, m, add, range),
+            4 => many_to_many::<M, 4, 2>(outs, ins, m, add, range),
+            5 => many_to_many::<M, 5, 1>(outs, ins, m, add, range),
+            _ => many_to_many::<M, 6, 1>(outs, ins, m, add, range),
         }
     }
     to
 }
 
-/// `outs (+)= M * ins`: whole registers by `M`, the tails a byte at a time
+/// `outs (+)= m * ins`: whole registers by `M`, the tails a byte at a time
 #[inline(always)]
 pub(crate) unsafe fn matrix<M: Multiply>(
     outs: &mut [&mut [u8]],
@@ -261,11 +341,6 @@ pub(crate) unsafe fn matrix<M: Multiply>(
     m: &[MulTable],
     add: bool,
 ) {
-    if ins.is_empty() && !add {
-        let len = matrix_len(outs, ins);
-        outs.iter_mut()
-            .for_each(|o| o.get_mut(..len).unwrap_or(&mut []).fill(0));
-    }
     let done = passes::<M>(outs, ins, m, add, 0);
     passes::<Scalar>(outs, ins, m, add, done);
 }

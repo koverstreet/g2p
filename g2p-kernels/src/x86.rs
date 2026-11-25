@@ -16,6 +16,7 @@ impl Reg for __m128i {
     #[inline(always)] unsafe fn load(b: &[u8]) -> Self { _mm_loadu_si128(b.as_ptr().cast()) }
     #[inline(always)] unsafe fn store(self, b: &mut [u8]) { _mm_storeu_si128(b.as_mut_ptr().cast(), self) }
     #[inline(always)] unsafe fn xor(self, r: Self) -> Self { _mm_xor_si128(self, r) }
+    #[inline(always)] unsafe fn zero() -> Self { _mm_setzero_si128() }
 }
 
 #[rustfmt::skip]
@@ -32,6 +33,7 @@ impl Reg for __m256i {
     #[inline(always)] unsafe fn load(b: &[u8]) -> Self { _mm256_loadu_si256(b.as_ptr().cast()) }
     #[inline(always)] unsafe fn store(self, b: &mut [u8]) { _mm256_storeu_si256(b.as_mut_ptr().cast(), self) }
     #[inline(always)] unsafe fn xor(self, r: Self) -> Self { _mm256_xor_si256(self, r) }
+    #[inline(always)] unsafe fn zero() -> Self { _mm256_setzero_si256() }
 }
 
 #[rustfmt::skip]
@@ -56,6 +58,7 @@ impl Reg for __m512i {
     #[inline(always)] unsafe fn load(b: &[u8]) -> Self { _mm512_loadu_si512(b.as_ptr().cast()) }
     #[inline(always)] unsafe fn store(self, b: &mut [u8]) { _mm512_storeu_si512(b.as_mut_ptr().cast(), self) }
     #[inline(always)] unsafe fn xor(self, r: Self) -> Self { _mm512_xor_si512(self, r) }
+    #[inline(always)] unsafe fn zero() -> Self { _mm512_setzero_si512() }
 }
 
 #[cfg(g2p_avx512)]

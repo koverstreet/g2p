@@ -5,7 +5,7 @@
 // except according to those terms.
 
 use g2p::bulk::{mul, mul_add, mul_add_matrix, mul_matrix, set_isa, Isa, MulTable};
-use g2p::{g2p, GaloisField8, Matrix};
+use g2p::{g2p, GaloisField, GaloisField8, Matrix};
 
 g2p!(GF256, 8, modulus: 0b1_0001_1101);
 g2p!(Rijndael, 8, modulus: 0b1_0001_1011);
@@ -48,17 +48,27 @@ fn mul_is_field_mul<F: GaloisField8>(isa: Isa) {
 }
 
 /// A matrix's tables times buffers, against the matrix times each byte: more outputs than a pass
-/// takes and no inputs, more bytes than a tile, tails, and offsets that aren't aligned.
+/// takes and no inputs, more bytes than a tile, tails, and offsets that aren't aligned - of random
+/// coefficients, and an erasure code's: a row of 1s, P's, of powers of 2, Q's, then random rows,
+/// whose sums, single inputs and Horner's rows the kernels have their own ways of doing.
 fn matrix_is_matrix_mul(isa: Isa) {
-    for (nout, nin, len, off) in [
-        (1, 1, 1, 0),
-        (2, 10, 4096 + 5, 3),
-        (13, 5, 100, 7),
-        (3, 0, 33, 1),
+    for (nout, nin, len, off, code) in [
+        (1, 1, 1, 0, false),
+        (2, 10, 4096 + 5, 3, false),
+        (13, 5, 100, 7, false),
+        (3, 0, 33, 1, false),
+        (1, 6, 4096 + 5, 3, true),
+        (2, 1, 1000, 0, true),
+        (2, 6, 4096 + 37, 1, true),
+        (3, 10, 600, 5, true),
     ] {
         let a: Matrix<GF256, 13, 10> = {
             let e = noise(nout * nin, len as u64);
-            Matrix::from_fn(nout, nin, |r, c| GF256::from(e[r * nin + c]))
+            Matrix::from_fn(nout, nin, |r, c| match r {
+                0 if code => GF256::from(1),
+                1 if code => GF256::from(2).pow(c),
+                _ => GF256::from(e[r * nin + c]),
+            })
         };
         let ins: Vec<Vec<u8>> = (0..nin).map(|i| noise(len + off, i as u64)).collect();
         let before: Vec<Vec<u8>> = (0..nout)
