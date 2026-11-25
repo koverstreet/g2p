@@ -8,7 +8,8 @@ fn main() {
     // "rustc 1.MINOR.PATCH ..."
     let minor = version.and_then(|v| v.split(|c| c == ' ' || c == '.').nth(2)?.parse().ok());
 
-    println!("cargo:rustc-check-cfg=cfg(g2p_avx512)");
+    // g2p_extern and g2p_export are set by builds that aren't cargo's: see lib.rs
+    println!("cargo:rustc-check-cfg=cfg(g2p_avx512, g2p_extern, g2p_export)");
     if minor.map_or(false, |m: u32| m >= 89) {
         println!("cargo:rustc-cfg=g2p_avx512");
     }

@@ -10,8 +10,16 @@
 //! A crate of its own so it can be built on its own - for a target whose code otherwise may not
 //! use vector registers, a kernel's - and so nothing in it panics: a kernel does as many bytes as
 //! its shortest buffer has, and a coefficient past the end of `m` is zero.
+//!
+//! Built on its own, it's built twice: with cfg `g2p_export` for a target with vector registers,
+//! the kernels behind one unmangled symbol, `g2p_kernels_matrix`; and with cfg `g2p_extern` for
+//! the target that hasn't, what g2p uses - the kernels' types, and `g2p_kernels_matrix`, called
+//! through an `extern` block. Both are one rustc's, and what crosses between them is slices of
+//! bytes, `MulTable`s and an `Isa`: their layout is pinned down.
 
 #![no_std]
+// What the kernels are made of isn't used where they're the other build's
+#![cfg_attr(g2p_extern, allow(dead_code, unused_imports))]
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -37,6 +45,7 @@ use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
 /// Multiplying bytes by a coefficient `c` of some GF(2^8): its products with each nibble, which
 /// `pshufb` and `tbl` look bytes up in, and its 8x8 bit matrix, which GFNI multiplies by
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub struct MulTable {
     nibbles: [[u8; 16]; 2],
     /// Byte `7 - i` is the row of a product's bit `i`
@@ -85,17 +94,17 @@ impl Isa {
     /// Every ISA this CPU has, the best first: found at runtime with the `std` feature, else what
     /// the build targets
     pub fn all() -> impl Iterator<Item = Isa> {
-        arch::ALL.iter().copied().filter(|&i| arch::has(i))
+        Isa::ALL.iter().copied().filter(|&i| arch::has(i))
     }
 }
 
-/// The ISA [`set_isa()`] said, as its place in `arch::ALL` - its discriminant - plus one
+/// The ISA [`set_isa()`] said, as its place in [`Isa::ALL`] - its discriminant - plus one
 static ISA: AtomicU8 = AtomicU8::new(0);
 
 /// The ISA the kernels run: the best this CPU has, unless [`set_isa()`] said
 pub fn isa() -> Isa {
     let set = usize::from(ISA.load(Relaxed)).checked_sub(1);
-    match set.and_then(|i| arch::ALL.get(i)) {
+    match set.and_then(|i| Isa::ALL.get(i)) {
         Some(&isa) => isa,
         None => Isa::all().next().unwrap_or(Isa::Scalar),
     }
@@ -104,7 +113,8 @@ pub fn isa() -> Isa {
 /// Run `isa`'s kernels from now on
 ///
 /// # Safety
-/// The CPU must have it: where there's no `std` to find out, it's the caller who knows.
+/// The CPU must have it - [`Isa::features()`]: where there's no `std` to find out, it's the caller
+/// who knows.
 pub unsafe fn set_isa(isa: Isa) {
     ISA.store(isa as u8 + 1, Relaxed);
 }

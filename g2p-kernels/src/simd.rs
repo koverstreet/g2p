@@ -42,12 +42,24 @@ macro_rules! isas {
     ($($(#[$cfg:meta])* $isa:ident: $kernel:ident, $m:ty, $($feature:tt),+;)*) => {
         /// The kernels to run: an ISA's
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
         pub enum Isa {
             $($(#[$cfg])* $isa,)*
             Scalar,
         }
 
-        pub(crate) const ALL: &[Isa] = &[$($(#[$cfg])* Isa::$isa,)* Isa::Scalar];
+        impl Isa {
+            /// Every ISA there are kernels for, the best first
+            pub const ALL: &'static [Isa] = &[$($(#[$cfg])* Isa::$isa,)* Isa::Scalar];
+
+            /// The target features its kernels need
+            pub fn features(self) -> &'static [&'static str] {
+                match self {
+                    $($(#[$cfg])* Isa::$isa => &[$($feature),+],)*
+                    Isa::Scalar => &[],
+                }
+            }
+        }
 
         pub(crate) fn has(isa: Isa) -> bool {
             match isa {
@@ -58,6 +70,7 @@ macro_rules! isas {
 
         $(
             $(#[$cfg])*
+            #[cfg(not(g2p_extern))]
             $(#[target_feature(enable = $feature)])+
             unsafe fn $kernel(outs: &mut [&mut [u8]], ins: &[&[u8]], m: &[$crate::MulTable], add: bool) {
                 $crate::simd::matrix::<$m>(outs, ins, m, add)
@@ -66,11 +79,20 @@ macro_rules! isas {
 
         /// # Safety
         /// The CPU must have `isa`.
+        #[cfg(not(g2p_extern))]
+        #[cfg_attr(g2p_export, export_name = "g2p_kernels_matrix")]
         pub(crate) unsafe fn matrix(isa: Isa, outs: &mut [&mut [u8]], ins: &[&[u8]], m: &[$crate::MulTable], add: bool) {
             match isa {
                 $($(#[$cfg])* Isa::$isa => $kernel(outs, ins, m, add),)*
                 Isa::Scalar => $crate::simd::matrix::<$crate::simd::Scalar>(outs, ins, m, add),
             }
+        }
+
+        #[cfg(g2p_extern)]
+        extern "Rust" {
+            /// The g2p_export build's: the CPU must have `isa`
+            #[link_name = "g2p_kernels_matrix"]
+            pub(crate) fn matrix(isa: Isa, outs: &mut [&mut [u8]], ins: &[&[u8]], m: &[$crate::MulTable], add: bool);
         }
     };
 }
