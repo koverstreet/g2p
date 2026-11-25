@@ -1,7 +1,9 @@
 [workspace]
+resolver = "2"
 
 members = [
     "g2gen",
     "g2poly",
     "g2p",
+    "g2p-kernels",
 ]

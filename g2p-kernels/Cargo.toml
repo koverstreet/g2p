@@ -1,0 +1,21 @@
+[package]
+name = "g2p-kernels"
+version = "0.1.0"
+authors = ["WanzenBug <moritz@wanzenbug.xyz>", "Kent Overstreet <kent.overstreet@linux.dev>"]
+edition = "2021"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/WanzenBug/g2p"
+documentation = "https://docs.rs/g2p-kernels"
+description = """
+SIMD kernels for g2p: multiplying buffers of GF(2^8) elements by a constant.
+"""
+categories = [ "no-std", "algorithms" ]
+keywords = [ "finite-field", "galois", "simd", "reed-solomon" ]
+rust-version = "1.63"
+
+[features]
+# Choosing the kernels at runtime, for the CPU they run on: without it, for the CPU compiled for,
+# or what set_isa() says
+std = []
+
+[dependencies]
